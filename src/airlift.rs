@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use crate::afc::AfcClient;
 use crate::apple::{CFTypeRef, get_apple_libraries};
 use crate::device::ActiveDeviceSession;
+use crate::transfer::{ArchiveWriter, TransferProfile, send_archive};
 
 pub const SOURCE_PREFIX: &str = "airlift-src-";
 pub const LINK_PREFIX: &str = "airlift-link-";
@@ -279,11 +280,16 @@ pub fn restore_books(afc: &AfcClient, snapshot: &BooksSnapshot) -> Result<()> {
     Ok(())
 }
 
-pub fn stage_streaming_zip(
+pub fn stage_streaming_zip<L>(
     session: &ActiveDeviceSession,
     source_subdir: &str,
     archive: &[u8],
-) -> Result<()> {
+    profile: TransferProfile,
+    mut log: L,
+) -> Result<()>
+where
+    L: FnMut(&str),
+{
     let libs = get_apple_libraries()?;
     let zip_service = session.start_service("com.apple.streaming_zip_conduit")?;
 
@@ -305,22 +311,56 @@ pub fn stage_streaming_zip(
             bail!("AMDServiceConnectionSendMessage failed with code {}", status);
         }
 
-        // Send streaming zip payload
-        let mut sent = 0;
-        while sent < archive.len() {
-            let chunk_size = std::cmp::min(65536, archive.len() - sent);
-            let s = unsafe {
-                (libs.amd_service_connection_send)(
-                    zip_service,
-                    archive.as_ptr().add(sent),
-                    chunk_size,
-                )
-            };
-            if s <= 0 {
-                bail!("AMDServiceConnectionSend failed during archive transmission");
-            }
-            sent += s as usize;
+        struct AmdArchiveWriter<'a> {
+            libs: &'a crate::apple::AppleLibraries,
+            service: crate::apple::AMDServiceConnectionRef,
         }
+
+        impl ArchiveWriter for AmdArchiveWriter<'_> {
+            fn send(&mut self, bytes: &[u8]) -> i32 {
+                unsafe {
+                    (self.libs.amd_service_connection_send)(
+                        self.service,
+                        bytes.as_ptr(),
+                        bytes.len(),
+                    )
+                }
+            }
+        }
+
+        log(&format!(
+            "StreamingZip Send: service=com.apple.streaming_zip_conduit mode={} bytes total={} retry=0",
+            profile.label(),
+            archive.len(),
+        ));
+        let mut last_reported = 0usize;
+        let mut writer = AmdArchiveWriter { libs: &libs, service: zip_service };
+        let metrics = send_archive(&mut writer, archive, profile, |update| {
+            // Avoid flooding the UI log while still preserving the first, every
+            // 256 KiB, final, and every native failure result.
+            let should_report = update.native_result <= 0
+                || update.bytes_transferred == update.bytes_total
+                || update.bytes_transferred.saturating_sub(last_reported) >= 256 * 1024;
+            if should_report {
+                last_reported = update.bytes_transferred;
+                log(&format!(
+                    "Transfer: Service=StreamingZip Operation=AMDServiceConnectionSend Transferred: {} / {} Bytes attempted: {} Chunk: {} Native result: {} Retry: 0",
+                    update.bytes_transferred,
+                    update.bytes_total,
+                    update.bytes_attempted,
+                    update.chunk_bytes,
+                    update.native_result,
+                ));
+            }
+        })
+        .context("Failed during StreamingZip archive transmission")?;
+        log(&format!(
+            "StreamingZip Send complete: {} / {} bytes in {} native send call(s), mode={}",
+            metrics.bytes_transferred,
+            metrics.bytes_total,
+            metrics.send_calls,
+            profile.label(),
+        ));
 
         // Set receive timeout so socket cannot block indefinitely
         let raw_socket = unsafe { (libs.amd_service_connection_get_socket)(zip_service) };

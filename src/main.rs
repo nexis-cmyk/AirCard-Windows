@@ -11,6 +11,7 @@ mod image_skin;
 mod i18n;
 mod passthm;
 mod scanner;
+mod transfer;
 mod wallet_backup;
 
 fn main() -> eframe::Result<()> {
@@ -18,12 +19,12 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
             .with_min_inner_size([850.0, 560.0])
-            .with_title("AirCard v1.2.1"),
+            .with_title("AirCard v1.3.0"),
         ..Default::default()
     };
 
     eframe::run_native(
-        "AirCard v1.2.1",
+        "AirCard v1.3.0",
         options,
         Box::new(|cc| Ok(Box::new(app::AirCardApp::new(cc)))),
     )

@@ -1,6 +1,7 @@
 use std::ffi::{CStr, CString};
 use std::os::windows::ffi::OsStrExt;
 use std::path::PathBuf;
+use std::process::Command;
 use std::ptr;
 use std::sync::{Arc, OnceLock};
 
@@ -444,4 +445,88 @@ pub fn verify_support() -> Result<String> {
     let _libs = get_apple_libraries()?;
     let dir = locate_support_dir().unwrap_or_default();
     Ok(format!("Apple Mobile Device Support ready: {}", dir.display()))
+}
+
+/// Read-only host checks used by the Diagnostics screen.  This intentionally
+/// never repairs drivers, edits the registry, or changes Apple installations.
+pub fn runtime_diagnostics() -> Vec<String> {
+    let mut lines = Vec::new();
+    let support = locate_support_dir();
+    match support {
+        Some(ref dir) => {
+            lines.push(format!("[OK] Apple Mobile Device Support: {}", dir.display()));
+            for name in ["MobileDevice.dll", "CoreFoundation.dll", "AirTrafficHost.dll", "CoreFP.dll"] {
+                let path = dir.join(name);
+                if path.is_file() {
+                    let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    let version = file_version(&path).unwrap_or_else(|| "version unavailable".to_string());
+                    lines.push(format!("[OK] {}: {} ({} bytes)", name, version, bytes));
+                } else {
+                    lines.push(format!("[WARN] {}: not found in selected Apple runtime", name));
+                }
+            }
+        }
+        None => lines.push("[FAIL] Apple Mobile Device Support: no compatible classic 64-bit runtime found".to_string()),
+    }
+
+    for (service, label) in [
+        ("Apple Mobile Device Service", "Apple Mobile Device Service"),
+        ("Bonjour Service", "Bonjour Service"),
+    ] {
+        let output = Command::new("sc.exe").args(["query", service]).output();
+        let state = output
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|out| if out.contains("RUNNING") { "Running" } else { "Not running" })
+            .unwrap_or("Not installed or unavailable");
+        let marker = if state == "Running" { "[OK]" } else { "[WARN]" };
+        lines.push(format!("{} {}: {}", marker, label, state));
+    }
+
+    let appx = Command::new("powershell.exe")
+        .args([
+            "-NoProfile", "-NonInteractive", "-Command",
+            "Get-AppxPackage | Where-Object { $_.Name -match 'iTunes|AppleDevices' } | ForEach-Object { $_.Name + ' ' + $_.Version }",
+        ])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default();
+    if appx.trim().is_empty() {
+        lines.push("[INFO] Microsoft Store iTunes / Apple Devices: not detected".to_string());
+    } else {
+        lines.push(format!("[WARN] Microsoft Store Apple software detected: {}", appx.trim().replace('\n', "; ")));
+        lines.push("[WARN] Store packages can keep CoreFP registration private; use the classic 64-bit Apple runtime if StreamingZip fails.".to_string());
+    }
+
+    let corefp = Command::new("reg.exe")
+        .args(["query", r"HKLM\SOFTWARE\Apple Inc.\CoreFP", "/v", "LibraryPath", "/reg:64"])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .unwrap_or_default();
+    if corefp.contains("LibraryPath") {
+        lines.push("[OK] CoreFP LibraryPath registry value: present".to_string());
+    } else {
+        lines.push("[WARN] CoreFP LibraryPath registry value: not found (AirTrafficHost may not initialize with Store iTunes)".to_string());
+    }
+
+    if PathBuf::from(r"C:\Program Files (x86)\Common Files\Apple\Mobile Device Support\MobileDevice.dll").is_file() {
+        lines.push("[WARN] 32-bit Apple Mobile Device Support is also installed; AirCard requires the 64-bit runtime.".to_string());
+    }
+    lines
+}
+
+fn file_version(path: &std::path::Path) -> Option<String> {
+    let command = format!(
+        "(Get-Item -LiteralPath '{}').VersionInfo.FileVersion",
+        path.display().to_string().replace('\'', "''"),
+    );
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &command])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|out| out.trim().to_string())
+        .filter(|out| !out.is_empty())
 }

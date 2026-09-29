@@ -1,119 +1,81 @@
-# AirCard (Windows) 🎴
+# AirCard for Windows
 
-> **Apple Wallet Card Skinner & Lockscreen Passcode Themer for iOS 18+ (No Jailbreak Required)**  
-> Native Windows client written in Rust. Powered by the `airlift` AirTraffic sync exploit.
+AirCard is a native Windows client for preparing Apple Wallet card artwork and passcode-theme assets for a paired iPhone. It uses Apple Mobile Device services, AFC, StreamingZip, and AirTraffic. The project is experimental: Apple does not document these private services, and a successful device scan does not prove that every write operation will work on a particular iOS build.
 
----
+## Version 1.3.0
 
-## Features
-- 🎨 **Custom Card Skins:** Assign custom artwork, textures, or bank logos to Apple Pay and Apple Cash cards.
-- 🔢 **Lock Screen Passcode Themes (.passthm):** Apply custom keypad button artwork from popular Cowabunga & Nugget `.passthm` themes directly to iOS lockscreen.
-- ⚡ **100% Native & Lightweight:** Single standalone `aircard.exe` (~7.5 MB). No Python, no Flet, no webview, no bloated runtimes.
-- 🪟 **Material Design 3 Interface:** Clean, modern dark theme built with `egui` and `eframe`.
-- 📱 **Zero-Hassle Card Detection:** Tap any card in your iPhone's Wallet app while connected to detect its hash in real-time via `syslog_relay`.
-- 📶 **USB & WiFi Transport:** Scan card events and apply Wallet or passcode assets through USB or a paired local WiFi connection.
-- 🌐 **English / Simplified Chinese UI:** Switch the interface language from the top bar; the selection is saved locally for future launches.
-- 🔄 **Safe & Reversible:** Complete Books state snapshot and automatic restore engine — preserves original device state and backs up the original Wallet card face before replacing it.
-- 🚀 **Zero Jailbreak:** Utilizes Apple's built-in AirTraffic sync conduit without modifying system partitions or disabling security.
-
----
+- Transfers StreamingZip archives through a testable partial-write loop.
+- Uses a 64 KiB standard profile and a 16 KiB compatibility profile after a fresh device and service reconnect.
+- Shows transfer mode, byte counts, native return values, and retry context in the log and status area.
+- Adds a Diagnostics panel for the Apple runtime, device session, AFC, StreamingZip service, and selected card path.
+- Reports Store-iTunes/CoreFP and 32-bit/64-bit runtime warnings without altering installed Apple software or the registry.
 
 ## Requirements
-- **Windows 10 / 11 (64-bit)**
-- **Apple Mobile Device Support / 64-bit iTunes** (required for Apple device communication).
-- A Lightning or USB-C cable for the initial trust/pairing setup.
-- For WiFi mode, enable WiFi sync and keep the PC and iPhone on the same local network.
 
----
+- Windows 10 or Windows 11, 64-bit.
+- A current 64-bit Apple Mobile Device runtime. The classic iTunes installer or Apple Devices installation is the most predictable option for this application.
+- Apple Mobile Device Service running. Bonjour is required for Wi-Fi pairing and discovery.
+- An iPhone trusted with this Windows account. Use USB for initial pairing.
+- A recent iOS release that still exposes the required Apple services. AirCard detects the device version but does not assume a fixed maximum iOS version.
 
-## ⚠️ Troubleshooting & Driver Repair (If Nothing Works)
+Microsoft Store iTunes can place `CoreFP` registration in package-private state. That can allow device detection and Wallet scanning while preventing AirTraffic or archive transmission. The Diagnostics panel reports this configuration; it never copies DLLs, edits the registry, or removes Apple software.
 
-> [!TIP]
-> **iPhone not detected, AirTraffic sync hangs, or operation fails?**  
-> Corrupted or conflicting Apple USB drivers on Windows are the #1 root cause.
-> 1. Download and install **[3uTools](https://www.3u.com/)**.
-> 2. **Disconnect your iPhone** from your PC.
-> 3. In 3uTools, go to **Toolbox ➔ Repair Driver**.
-> 4. Click **Repair Now** and wait for the Apple driver reinstallation to finish.
-> 5. Reconnect your unlocked iPhone, tap **Trust**, and launch **AirCard**.
+## Install and build
 
----
-
-## Installation
-
-### Pre-built Executable
-1. Download **`aircard.exe`** from [Releases](https://github.com/Lumid-Off/AirCard-Windows/releases).
-2. Connect your iPhone via USB, unlock it, and tap **"Trust this Computer"** if prompted.
-3. Run **`aircard.exe`**. After WiFi sync is enabled, later sessions can work without the cable.
-
----
-
-## WiFi Connection Setup
-1. Connect the iPhone by USB for the initial pairing.
-2. In Apple Devices or iTunes, enable **Show this iPhone when on Wi-Fi** / **Sync with this iPhone over Wi-Fi**.
-3. Apply the setting, then keep the iPhone and PC on the same local network.
-4. In AirCard, click **Refresh** and confirm the device shows a **WiFi** transport.
-5. Disconnect the cable, click **Refresh** again, and select **WiFi only**. Use **Auto (USB preferred)** when automatic fallback is desired.
-
-If both transports are available, **Auto** uses USB first and falls back to WiFi. For a guaranteed end-to-end WiFi route, disconnect the USB cable, click **Refresh**, and then choose **WiFi only**. This is required because Apple's AirTraffic API selects its route by UDID rather than accepting a transport parameter.
-
----
-
-## How to Customize Apple Wallet Cards
-1. Connect your iPhone through USB or paired WiFi and ensure it is unlocked.
-2. In AirCard, stay on the **Wallet** tab and click **Scan**.
-3. On your iPhone:
-   - Open **Apple Wallet** (or double-click the Side/Power button).
-   - Tap the card you want to customize.
-   - AirCard intercepts and saves the card hash automatically. Click **Stop**.
-4. Click **Choose Image...** to pick your artwork (PNG, JPG, or WebP — drag inside the preview to position the crop, then scale it to `1536 × 969`).
-5. Click **Apply Card Skin**.
-6. Force-close the **Wallet** app on your iPhone from the App Switcher (swipe up from bottom, then swipe Wallet away) and reopen Wallet to see your new card!
-7. The first apply stores a local backup of the original card face. Use **Restore Original** later to write it back and invalidate Wallet's cached artwork.
-
----
-
-## How to Apply Lockscreen Passcode Themes (.passthm)
-1. Switch to the **Passcode** tab in AirCard.
-2. Click **Choose .passthm...** and select any `.passthm` package (Cowabunga or Nugget).
-3. Select your target iOS version cache:
-   - **Auto (TelephonyUI-10)** — iOS 18+ (Default)
-   - **TelephonyUI-9** — iOS 16 - 17
-   - **TelephonyUI-8** — Legacy iOS
-4. Click **Apply Passcode Theme**.
-5. Lock your iPhone screen or open Phone dialer to see your new custom passcode keypad buttons!
-
-> [!IMPORTANT]
-> **Turn OFF Bold Text:**  
-> On your iPhone, go to **Settings ➔ Display & Brightness** and make sure **Bold Text** is turned **OFF**. If Bold Text is enabled, iOS ignores cached dialer button graphics and renders system vector fonts instead.
-
----
-
-## Building from Source
-
-Prerequisites: [Rust toolchain](https://rustup.rs/) (`stable-x86_64-pc-windows-msvc`).
+Download `aircard.exe` from this fork's releases, or build from source with the stable MSVC Rust toolchain:
 
 ```powershell
-# Clone the repository
-git clone https://github.com/Lumid-Off/AirCard-Windows.git
+git clone https://github.com/nexis-cmyk/AirCard-Windows.git
 cd AirCard-Windows
-
-# Run tests
 cargo test
-
-# Build release binary
 cargo build --release
 ```
 
-The compiled binary will be in `target\release\aircard.exe`.
+The executable is written to `target\release\aircard.exe`.
 
----
+## Diagnostics
 
-## Contributors
-- **[@Lumid-Off](https://github.com/Lumid-Off)** (Windows Native Rust Port & Maintainer) — [GitHub](https://github.com/Lumid-Off) · [Twitter / X](https://x.com/LumidOff)
-- **[@mak5er](https://github.com/mak5er)** (Original macOS App & Exploit Research) — [GitHub](https://github.com/mak5er) · [Twitter / X](https://x.com/mak5er)
-- **[AirLift](https://github.com/0xjohnnydev/airlift)** by **[0xjohnny (@0xjohnnydev)](https://github.com/0xjohnnydev)**: Original AirTraffic/ATAirlock sandbox escape and proof of concept underlying `AirliftFFI`.
+Open **Help → Run Diagnostics** after selecting an iPhone. The non-destructive checks report:
+
+- Apple Mobile Device Support and the required DLLs
+- Apple Mobile Device Service and Bonjour status
+- Microsoft Store Apple software, CoreFP configuration, and mixed 32-bit runtime warnings
+- detected iPhone, pairing/session, AFC, and StreamingZip service handshake
+- Books directory access and the selected card-hash directory, where applicable
+
+The diagnostics pass deliberately does not transfer a test archive or read it back: even a small StreamingZip test has a device-side write effect. A skipped transfer probe is reported explicitly rather than being presented as a successful test.
+
+## Applying Wallet artwork
+
+1. Connect and unlock the iPhone. Select it in AirCard.
+2. In **Wallet**, click **Scan**, open Wallet on the iPhone, and select the target card.
+3. Choose an image, position the crop, then click **Apply Card Skin**.
+4. Follow the visible transfer state. AirCard tries these modes in order:
+   - **Mode A:** atomic batch with the 64 KiB standard StreamingZip profile.
+   - **Mode B:** individual assets, each with a fresh device session, using the standard profile.
+   - **Mode C:** individual assets with a newly opened session and StreamingZip service, using 16 KiB compatibility chunks.
+5. Reopen Wallet after a successful write.
+
+The activity log records timestamps, operation names, bytes attempted and transferred, native send results, chunk size, and retry context. It never records Apple IDs, passwords, or pairing secrets.
+
+## Troubleshooting
+
+`AMDServiceConnectionSend` failing during archive transmission is below AFC and AirTraffic. It means the StreamingZip connection stopped accepting archive bytes. Check Diagnostics before repeatedly retrying:
+
+- Use one consistent 64-bit Apple runtime. A stale 32-bit Mobile Device Support folder can be selected accidentally by older tools.
+- Avoid mixing 3uTools/i4Tools drivers with the Apple runtime used by AirCard. Upstream reports show that these combinations can break AirTraffic even when scanning works.
+- For Microsoft Store iTunes, check the CoreFP warning. The application does not attempt a registry repair because that changes system configuration.
+- Keep the iPhone unlocked and connected directly by USB while isolating transfer errors. Wi-Fi pairing can be enabled after USB succeeds.
+- If Mode C also fails at byte offset zero, the problem is likely the Apple transport/runtime rather than artwork size or the Wallet card hash.
+
+## Compatibility and limitations
+
+The project obtains iOS version and build information for diagnostics but has no hard-coded future-iOS allowlist. It cannot guarantee private Apple services on a newly released iOS build. The repository's automated tests cover archive construction, chunking, partial writes, and native-error reporting. A physical iPhone is required to verify device-side StreamingZip, AFC read-back, and AirTraffic behavior for a specific driver and iOS combination.
+
+## Security and data handling
+
+AirCard communicates with a paired device through Apple services. Keep the device trusted only on PCs you control. Backups and logs are local. Do not share logs containing card hashes unless you are comfortable disclosing those identifiers.
 
 ## Credits
-- Core exploit based on `airlift` (AirTraffic sync escape).
-- Theme format inspired by [Cowabunga](https://github.com/leminlimez/Cowabunga) and [Nugget](https://github.com/leminlimez/Nugget).
+
+The transport design is based on [airlift](https://github.com/0xjohnnydev/airlift) by 0xjohnny. Passcode-theme compatibility is inspired by Cowabunga and Nugget.

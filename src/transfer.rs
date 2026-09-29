@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn preserves_the_native_failure_code_and_offset() {
         let mut writer = ScriptedWriter {
-            results: vec![8, -4026530814i64 as i32],
+            results: vec![8, -42],
             calls: 0,
             requested: Vec::new(),
         };

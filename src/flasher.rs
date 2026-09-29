@@ -57,7 +57,7 @@ pub fn write_system_file<L>(
     target_dir: &str,
     leaf_name: &str,
     payload: &[u8],
-    mut log: L,
+    log: L,
 ) -> Result<()>
 where
     L: FnMut(&str),
@@ -80,7 +80,7 @@ fn write_system_file_with_profile<L>(
     leaf_name: &str,
     payload: &[u8],
     profile: TransferProfile,
-    log: L,
+    mut log: L,
 ) -> Result<()>
 where
     L: FnMut(&str),
@@ -157,7 +157,7 @@ pub fn write_system_files_batch<L>(
     connection_mode: ConnectionMode,
     target_dir: &str,
     items: &[(&str, &[u8])],
-    mut log: L,
+    log: L,
 ) -> Result<()>
 where
     L: FnMut(&str),
@@ -178,7 +178,7 @@ fn write_system_files_batch_with_profile<L>(
     target_dir: &str,
     items: &[(&str, &[u8])],
     profile: TransferProfile,
-    log: L,
+    mut log: L,
 ) -> Result<()>
 where
     L: FnMut(&str),

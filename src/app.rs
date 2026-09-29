@@ -852,7 +852,8 @@ impl AirCardApp {
                 }
                 BackgroundTaskMessage::Diagnostics(report) => {
                     self.diagnostics = report;
-                    for line in &self.diagnostics {
+                    let diagnostics_for_log = self.diagnostics.clone();
+                    for line in diagnostics_for_log {
                         self.add_log(format!("Diagnostics: {line}"));
                     }
                 }

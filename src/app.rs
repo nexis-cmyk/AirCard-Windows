@@ -8,7 +8,8 @@ use eframe::egui;
 use image::DynamicImage;
 
 use crate::apple;
-use crate::device::{ConnectionMode, DeviceInfo, DeviceTransport, list_connected_devices};
+use crate::afc::AfcClient;
+use crate::device::{ActiveDeviceSession, ConnectionMode, DeviceInfo, DeviceTransport, list_connected_devices};
 use crate::flasher::{flash_passcode_theme, flash_wallet_skin, restore_wallet_original};
 use crate::image_skin::{PreparedSkin, crop_uv_for_card};
 use crate::i18n::Language;
@@ -27,6 +28,7 @@ enum BackgroundTaskMessage {
     Progress { step: usize, total: usize, message: String },
     Log(String),
     CardFound { hash: String, name: String },
+    Diagnostics(Vec<String>),
     Done(Result<String, String>),
 }
 
@@ -102,6 +104,7 @@ pub struct AirCardApp {
     task_rx: Option<Receiver<BackgroundTaskMessage>>,
     logs: Vec<String>,
     show_logs_window: bool,
+    diagnostics: Vec<String>,
 }
 
 impl AirCardApp {
@@ -153,9 +156,10 @@ impl AirCardApp {
             task_rx: None,
             logs: Vec::new(),
             show_logs_window: false,
+            diagnostics: apple::runtime_diagnostics(),
         };
 
-        app.add_log("AirCard Windows v1.2.1 initialized");
+        app.add_log("AirCard Windows v1.3.0 initialized");
         app.add_log(format!("Apple Support Runtime: {}", if app.apple_ready { "Loaded and operational" } else { "Not found (iTunes required)" }));
         app.add_log(format!("Loaded {} saved card(s) from database", app.saved_cards.len()));
 
@@ -219,6 +223,68 @@ impl AirCardApp {
                 );
             }
         }
+    }
+
+    fn run_diagnostics(&mut self) {
+        if self.is_busy || self.scanning_syslog {
+            return;
+        }
+        self.is_busy = true;
+        self.status_msg = "Running non-destructive Apple Mobile diagnostics...".to_string();
+        self.add_log("Diagnostics started (read-only; no device data will be modified).");
+        let selected_udid = self.selected_udid.clone();
+        let card_hash = self.card_hash.trim().to_string();
+        let mode = self.connection_mode;
+        let (tx, rx) = channel();
+        self.task_rx = Some(rx);
+        thread::spawn(move || {
+            let mut report = apple::runtime_diagnostics();
+            match list_connected_devices() {
+                Ok(devices) if !devices.is_empty() => report.push(format!("[OK] iPhone detected: {} device(s)", devices.len())),
+                Ok(_) => report.push("[FAIL] iPhone detected: no paired iPhone visible through usbmuxd".to_string()),
+                Err(err) => report.push(format!("[FAIL] iPhone detection: {err:#}")),
+            }
+            if let Some(udid) = selected_udid {
+                match ActiveDeviceSession::open(Some(&udid), mode) {
+                    Ok(session) => {
+                        report.push(format!("[OK] Device paired/session: {} over {}", session.udid, session.transport.label()));
+                        match AfcClient::new(&session) {
+                            Ok(afc) => {
+                                report.push("[OK] AFC connection".to_string());
+                                match afc.list_directory("Books") {
+                                    Ok(_) => report.push("[OK] Wallet/Books directory accessible".to_string()),
+                                    Err(err) => report.push(format!("[FAIL] Wallet/Books directory: {err:#}")),
+                                }
+                                if crate::scanner::is_valid_card_hash(&card_hash) {
+                                    let path = format!("/var/mobile/Library/Passes/Cards/{}.pkpass", card_hash);
+                                    report.push(if afc.exists(&path) {
+                                        "[OK] Card hash directory found".to_string()
+                                    } else {
+                                        "[FAIL] Card hash directory not found".to_string()
+                                    });
+                                } else {
+                                    report.push("[INFO] Card hash test skipped: no valid hash selected".to_string());
+                                }
+                            }
+                            Err(err) => report.push(format!("[FAIL] AFC connection: {err:#}")),
+                        }
+                        match session.start_service("com.apple.streaming_zip_conduit") {
+                            Ok(service) => {
+                                unsafe { (session.libs.amd_service_connection_invalidate)(service); }
+                                report.push("[OK] StreamingZip conduit service handshake".to_string());
+                            }
+                            Err(err) => report.push(format!("[FAIL] StreamingZip conduit: {err:#}")),
+                        }
+                    }
+                    Err(err) => report.push(format!("[FAIL] Device pairing/session: {err:#}")),
+                }
+            } else {
+                report.push("[INFO] Device service checks skipped: select an iPhone first".to_string());
+            }
+            report.push("[INFO] Test transfer/read-back skipped: this diagnostics pass is non-destructive and does not stage a Wallet asset.".to_string());
+            let _ = tx.send(BackgroundTaskMessage::Diagnostics(report));
+            let _ = tx.send(BackgroundTaskMessage::Done(Ok("Diagnostics completed.".to_string())));
+        });
     }
 
     fn selected_transport_available(&self) -> bool {
@@ -779,7 +845,17 @@ impl AirCardApp {
                     self.status_msg = msg_str;
                 }
                 BackgroundTaskMessage::Log(log_line) => {
+                    if log_line.starts_with("Transfer:") || log_line.starts_with("Mode ") {
+                        self.status_msg = log_line.clone();
+                    }
                     self.add_log(log_line);
+                }
+                BackgroundTaskMessage::Diagnostics(report) => {
+                    self.diagnostics = report;
+                    let diagnostics_for_log = self.diagnostics.clone();
+                    for line in diagnostics_for_log {
+                        self.add_log(format!("Diagnostics: {line}"));
+                    }
                 }
                 BackgroundTaskMessage::CardFound { hash, name } => {
                     self.card_hash = hash.clone();
@@ -1745,6 +1821,30 @@ impl AirCardApp {
 
     fn show_help_tab(&mut self, ui: &mut egui::Ui) {
         let language = self.language;
+        let mut run_diagnostics = false;
+        m3_card(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Diagnostics").strong().size(16.0).color(md3::ON_SURFACE));
+                ui.add_space(8.0);
+                let enabled = !self.is_busy && !self.scanning_syslog;
+                ui.add_enabled_ui(enabled, |ui| {
+                    if m3_button_tonal(ui, "Run Diagnostics") {
+                        run_diagnostics = true;
+                    }
+                });
+            });
+            ui.add_space(5.0);
+            ui.label(egui::RichText::new("Read-only checks for the Apple runtime, selected iPhone, pairing, AFC, StreamingZip service, and selected card directory. A transfer/read-back probe is intentionally skipped because it would write to the device.").size(11.0).color(md3::ON_SURFACE_VARIANT));
+            ui.add_space(8.0);
+            for line in &self.diagnostics {
+                let color = if line.starts_with("[OK]") { md3::SUCCESS } else if line.starts_with("[FAIL]") { md3::ERROR } else { md3::ON_SURFACE_VARIANT };
+                ui.label(egui::RichText::new(line).size(10.5).color(color));
+            }
+        });
+        if run_diagnostics {
+            self.run_diagnostics();
+        }
+        ui.add_space(12.0);
         ui.columns(2, |cols| {
             let left = &mut cols[0];
             m3_card(left, |ui| {

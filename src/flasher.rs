@@ -11,6 +11,7 @@ use crate::airlift::{
 };
 use crate::airtraffic::sync_assets_via_airtraffic;
 use crate::device::{ActiveDeviceSession, ConnectionMode};
+use crate::transfer::TransferProfile;
 use crate::wallet_backup::{capture_original_card, load_original_assets};
 
 #[allow(dead_code)]
@@ -56,6 +57,29 @@ pub fn write_system_file<L>(
     target_dir: &str,
     leaf_name: &str,
     payload: &[u8],
+    log: L,
+) -> Result<()>
+where
+    L: FnMut(&str),
+{
+    write_system_file_with_profile(
+        udid,
+        connection_mode,
+        target_dir,
+        leaf_name,
+        payload,
+        TransferProfile::Standard,
+        log,
+    )
+}
+
+fn write_system_file_with_profile<L>(
+    udid: &str,
+    connection_mode: ConnectionMode,
+    target_dir: &str,
+    leaf_name: &str,
+    payload: &[u8],
+    profile: TransferProfile,
     mut log: L,
 ) -> Result<()>
 where
@@ -91,8 +115,8 @@ where
         .context("Failed to build Books.plist")?;
 
     let write_res = (|| -> Result<()> {
-        log(&format!("Staging payload archive ({} bytes) via MobileInstallation...", archive_data.len()));
-        stage_streaming_zip(&session, &source, &archive_data)
+        log(&format!("Staging payload archive ({} bytes) through StreamingZip conduit, mode={}...", archive_data.len(), profile.label()));
+        stage_streaming_zip(&session, &source, &archive_data, profile, &mut log)
             .context("Failed to stage streaming zip conduit")?;
 
         let link_obj = format!("{}/p0/p1/p2/link", source);
@@ -133,6 +157,27 @@ pub fn write_system_files_batch<L>(
     connection_mode: ConnectionMode,
     target_dir: &str,
     items: &[(&str, &[u8])],
+    log: L,
+) -> Result<()>
+where
+    L: FnMut(&str),
+{
+    write_system_files_batch_with_profile(
+        udid,
+        connection_mode,
+        target_dir,
+        items,
+        TransferProfile::Standard,
+        log,
+    )
+}
+
+fn write_system_files_batch_with_profile<L>(
+    udid: &str,
+    connection_mode: ConnectionMode,
+    target_dir: &str,
+    items: &[(&str, &[u8])],
+    profile: TransferProfile,
     mut log: L,
 ) -> Result<()>
 where
@@ -142,12 +187,13 @@ where
         return Ok(());
     }
     if items.len() == 1 {
-        return write_system_file(
+        return write_system_file_with_profile(
             udid,
             connection_mode,
             target_dir,
             items[0].0,
             items[0].1,
+            profile,
             log,
         );
     }
@@ -188,8 +234,8 @@ where
         .context("Failed to build Books.plist for batch")?;
 
     let write_res = (|| -> Result<()> {
-        log(&format!("Staging multi-payload archive ({} bytes, {} files) via MobileInstallation...", archive_data.len(), items.len()));
-        stage_streaming_zip(&session, &source, &archive_data)
+        log(&format!("Staging multi-payload archive ({} bytes, {} files) through StreamingZip conduit, mode={}...", archive_data.len(), items.len(), profile.label()));
+        stage_streaming_zip(&session, &source, &archive_data, profile, &mut log)
             .context("Failed to stage streaming zip conduit")?;
 
         let link_obj = format!("{}/p0/p1/p2/link", source);
@@ -266,17 +312,47 @@ where
         ("cardBackgroundCombined.pdf", skin_pdf),
     ];
 
-    if let Err(err) = write_system_files_batch(
+    if let Err(batch_err) = write_system_files_batch_with_profile(
         udid,
         connection_mode,
         &pkpass_dir,
         &card_assets,
+        TransferProfile::Standard,
         &mut log,
     ) {
-        log(&format!("Notice: Batch write failed ({}), trying individual asset writes...", err));
-        for (asset, data) in &card_assets {
-            write_system_file(udid, connection_mode, &pkpass_dir, asset, data, &mut log)
-                .context(format!("Failed to write card asset {}", asset))?;
+        log(&format!("Mode A (atomic batch) failed: {batch_err:#}"));
+        log("Mode B: retrying individual assets with a fresh device session per asset (standard 64 KiB transfer)...");
+        let standard_result = (|| -> Result<()> {
+            for (asset, data) in &card_assets {
+                write_system_file_with_profile(
+                    udid,
+                    connection_mode,
+                    &pkpass_dir,
+                    asset,
+                    data,
+                    TransferProfile::Standard,
+                    &mut log,
+                )
+                .context(format!("Failed to write card asset {} in Mode B", asset))?;
+            }
+            Ok(())
+        })();
+
+        if let Err(standard_err) = standard_result {
+            log(&format!("Mode B failed: {standard_err:#}"));
+            log("Mode C: rebuilding each native session and StreamingZip service, using compatibility 16 KiB chunks...");
+            for (asset, data) in &card_assets {
+                write_system_file_with_profile(
+                    udid,
+                    connection_mode,
+                    &pkpass_dir,
+                    asset,
+                    data,
+                    TransferProfile::Compatibility,
+                    &mut log,
+                )
+                .context(format!("Failed to write card asset {} in Mode C", asset))?;
+            }
         }
     }
 

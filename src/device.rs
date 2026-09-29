@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::ptr;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -10,6 +11,52 @@ use anyhow::{Context, Result, bail};
 use crate::apple::{
     AMDServiceConnectionRef, AMDeviceRef, AppleLibraries, get_apple_libraries,
 };
+
+const AMD_NOT_CONNECTED_ERROR: i32 = 0xE800000B_u32 as i32;
+const AMD_SEND_MESSAGE_ERROR: i32 = 0xE800002D_u32 as i32;
+const AMD_RECEIVE_MESSAGE_ERROR: i32 = 0xE800002E_u32 as i32;
+const AMD_MUX_ERROR: i32 = 0xE8000035_u32 as i32;
+const SESSION_RECONNECT_DELAY: Duration = Duration::from_millis(350);
+
+#[derive(Debug)]
+struct AmdStatusError {
+    operation: &'static str,
+    status: i32,
+}
+
+impl std::fmt::Display for AmdStatusError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} failed with {}", self.operation, format_amd_status(self.status))
+    }
+}
+
+impl std::error::Error for AmdStatusError {}
+
+fn format_amd_status(status: i32) -> String {
+    let name = match status {
+        AMD_NOT_CONNECTED_ERROR => "kAMDNotConnectedError",
+        AMD_SEND_MESSAGE_ERROR => "kAMDSendMessageError",
+        AMD_RECEIVE_MESSAGE_ERROR => "kAMDReceiveMessageError",
+        AMD_MUX_ERROR => "kAMDMuxError",
+        _ => "unknown Apple Mobile Device error",
+    };
+    format!("{} (0x{:08X}, {})", status, status as u32, name)
+}
+
+fn needs_fresh_session_retry(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<AmdStatusError>()
+        .is_some_and(|native| {
+            native.operation == "AMDeviceStartSession"
+                && matches!(
+                    native.status,
+                    AMD_NOT_CONNECTED_ERROR
+                        | AMD_SEND_MESSAGE_ERROR
+                        | AMD_RECEIVE_MESSAGE_ERROR
+                        | AMD_MUX_ERROR
+                )
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DeviceTransport {
@@ -382,6 +429,38 @@ impl ActiveDeviceSession {
             let transport = entry.transport;
             match Self::open_entry(Arc::clone(&libs), entry) {
                 Ok(session) => return Ok(session),
+                Err(err) if needs_fresh_session_retry(&err) => {
+                    failures.push(format!("{} first session attempt: {err:#}", transport.label()));
+                    // The previous AFC/StreamingZip service can have just been
+                    // invalidated.  Let usbmuxd observe that teardown, then use
+                    // freshly queried device properties for one new connection.
+                    // This is deliberately a single recovery attempt, not a
+                    // generic retry loop for application or pairing failures.
+                    sleep(SESSION_RECONNECT_DELAY);
+                    let refreshed = query_usbmux_devices()
+                        .ok()
+                        .and_then(|devices| {
+                            devices.into_iter().find(|candidate| {
+                                candidate.transport == transport
+                                    && target_udid
+                                        .map(|target| candidate.udid.eq_ignore_ascii_case(target))
+                                        .unwrap_or(true)
+                            })
+                        });
+                    match refreshed {
+                        Some(entry) => match Self::open_entry(Arc::clone(&libs), entry) {
+                            Ok(session) => return Ok(session),
+                            Err(retry_err) => failures.push(format!(
+                                "{} fresh reconnect: {retry_err:#}",
+                                transport.label()
+                            )),
+                        },
+                        None => failures.push(format!(
+                            "{} fresh reconnect: device no longer present after session-start transport failure",
+                            transport.label()
+                        )),
+                    }
+                }
                 Err(err) => failures.push(format!("{}: {err:#}", transport.label())),
             }
         }
@@ -434,7 +513,11 @@ impl ActiveDeviceSession {
             if session_status != 0 {
                 (libs.am_device_disconnect)(device);
                 (libs.cf_release)(device);
-                bail!("AMDeviceStartSession failed with code {}", session_status);
+                return Err(AmdStatusError {
+                    operation: "AMDeviceStartSession",
+                    status: session_status,
+                }
+                .into());
             }
 
             Ok(Self {
@@ -494,6 +577,28 @@ mod tests {
         let wifi = ordered_candidates(entries, Some("phone"), ConnectionMode::Wifi);
         assert_eq!(wifi.len(), 1);
         assert_eq!(wifi[0].transport, DeviceTransport::Wifi);
+    }
+
+    #[test]
+    fn session_start_send_failure_is_a_single_reconnect_candidate() {
+        let error = anyhow::Error::new(AmdStatusError {
+            operation: "AMDeviceStartSession",
+            status: AMD_SEND_MESSAGE_ERROR,
+        });
+
+        assert!(needs_fresh_session_retry(&error));
+        assert!(format_amd_status(AMD_SEND_MESSAGE_ERROR).contains("0xE800002D"));
+        assert!(format_amd_status(AMD_SEND_MESSAGE_ERROR).contains("kAMDSendMessageError"));
+    }
+
+    #[test]
+    fn pairing_errors_do_not_trigger_session_reconnect() {
+        let error = anyhow::Error::new(AmdStatusError {
+            operation: "AMDeviceValidatePairing",
+            status: AMD_SEND_MESSAGE_ERROR,
+        });
+
+        assert!(!needs_fresh_session_retry(&error));
     }
 
     #[test]
